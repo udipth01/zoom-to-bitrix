@@ -1,12 +1,20 @@
+import hmac
+import hashlib
+import base64
 from fastapi import FastAPI, Request
 import httpx
 import logging
+import os
+
 
 app = FastAPI()
 
 BITRIX_FORM_URL = "https://finideas.bitrix24.in/bitrix/services/main/ajax.php?action=crm.site.form.fill"
 FORM_ID = "906"
 SEC_CODE = "tzk3qe"
+
+# Get this from Zoom App Marketplace → Feature → Event Subscriptions → Secret Token
+ZOOM_SECRET_TOKEN = os.getenv("ZOOM_SECRET_TOKEN")
 
 logging.basicConfig(level=logging.INFO)
 
@@ -15,14 +23,24 @@ async def zoom_webhook(request: Request):
     data = await request.json()
     logging.info(f"Zoom Payload: {data}")
 
-    # Step 1: Handle Zoom validation event
-    if "plainToken" in data:
+    # Step 1: Handle Zoom URL validation
+    if data.get("event") == "endpoint.url_validation":
+        plain_token = data["payload"]["plainToken"]
+
+        # Create HMAC-SHA256 using Zoom secret token
+        hmac_obj = hmac.new(
+            ZOOM_SECRET_TOKEN.encode(),
+            plain_token.encode(),
+            hashlib.sha256
+        )
+        encrypted_token = base64.b64encode(hmac_obj.digest()).decode()
+
         return {
-            "plainToken": data["plainToken"],
-            "encryptedToken": data["encryptedToken"]
+            "plainToken": plain_token,
+            "encryptedToken": encrypted_token
         }
 
-    # Step 2: Handle meeting participant join event
+    # Step 2: Meeting participant joined
     if data.get("event") == "meeting.participant_joined":
         participant = data.get("payload", {}).get("object", {}).get("participant", {})
 
