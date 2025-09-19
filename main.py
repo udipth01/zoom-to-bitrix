@@ -1,17 +1,28 @@
 from fastapi import FastAPI, Request
 import httpx
+import logging
 
 app = FastAPI()
 
-BITRIX_FORM_URL = "https://finideas.bitrix24.in/bitrix/services/main/ajax.php"
-
+BITRIX_FORM_URL = "https://finideas.bitrix24.in/bitrix/services/main/ajax.php?action=crm.site.form.fill"
 FORM_ID = "906"
 SEC_CODE = "tzk3qe"
+
+logging.basicConfig(level=logging.INFO)
 
 @app.post("/zoom/webhook")
 async def zoom_webhook(request: Request):
     data = await request.json()
+    logging.info(f"Zoom Payload: {data}")
 
+    # Step 1: Handle Zoom validation event
+    if "plainToken" in data:
+        return {
+            "plainToken": data["plainToken"],
+            "encryptedToken": data["encryptedToken"]
+        }
+
+    # Step 2: Handle meeting participant join event
     if data.get("event") == "meeting.participant_joined":
         participant = data.get("payload", {}).get("object", {}).get("participant", {})
 
@@ -19,11 +30,10 @@ async def zoom_webhook(request: Request):
         first_name = full_name[0]
         last_name = full_name[1] if len(full_name) > 1 else ""
 
-        email = participant.get("email", "") or "noemail@dummy.com"
-        phone = participant.get("phone_number", "") or "+91 0000000000"
+        email = participant.get("email", "")
+        phone = participant.get("phone_number", "")
 
         payload = {
-            "action": "crm.site.form.fill",
             "id": FORM_ID,
             "sec": SEC_CODE,
             "lang": "en",
