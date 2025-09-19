@@ -3,7 +3,10 @@ import httpx
 
 app = FastAPI()
 
-BITRIX_FORM_URL = "https://finideas.bitrix24.in/bitrix/services/main/ajax.php?action=crm.site.form.fill"
+BITRIX_FORM_URL = "https://finideas.bitrix24.in/bitrix/services/main/ajax.php"
+
+FORM_ID = "906"
+SEC_CODE = "tzk3qe"
 
 @app.post("/zoom/webhook")
 async def zoom_webhook(request: Request):
@@ -16,13 +19,13 @@ async def zoom_webhook(request: Request):
         first_name = full_name[0]
         last_name = full_name[1] if len(full_name) > 1 else ""
 
-        email = participant.get("email", "")
-        phone = participant.get("phone_number", "")
+        email = participant.get("email", "") or "noemail@dummy.com"
+        phone = participant.get("phone_number", "") or "+91 0000000000"
 
-        # Mimic browser form submission
         payload = {
-            "id": "906",            # form id
-            "sec": "tzk3qe",        # security key
+            "action": "crm.site.form.fill",
+            "id": FORM_ID,
+            "sec": SEC_CODE,
             "lang": "en",
             "timeZoneOffset": -330,
             "values": {
