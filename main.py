@@ -37,7 +37,7 @@ async def zoom_webhook(request: Request):
         )
         encrypted_token = base64.b64encode(hmac_obj.digest()).decode()
 
-        logging.info(f"URL Validation -> plainToken: {plain_token}, encryptedToken: {encrypted_token}")
+        logging.info(f"URL Validation -> plainToken: {plain_token}, encryptedToken: {encrypted_token},ZOOM_SECRET_TOKEN:{ZOOM_SECRET_TOKEN}")
 
         return {
             "plainToken": plain_token,
