@@ -1,10 +1,10 @@
 import os
 import hmac
 import hashlib
-import base64
 import logging
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Header, HTTPException
 import httpx
+import time
 
 app = FastAPI()
 
@@ -21,28 +21,46 @@ logging.basicConfig(level=logging.INFO)
 
 # ------------------- ROUTE -------------------
 @app.post("/zoom/webhook")
-async def zoom_webhook(request: Request):
+async def zoom_webhook(
+    request: Request,
+    x_zm_signature: str = Header(None),
+    x_zm_request_timestamp: str = Header(None)
+):
+    body_bytes = await request.body()
     data = await request.json()
     logging.info(f"Zoom Payload: {data}")
+
+    # ------------------- VERIFY SIGNATURE -------------------
+    if not x_zm_signature or not x_zm_request_timestamp:
+        raise HTTPException(status_code=400, detail="Missing Zoom headers")
+
+    # Prevent replay attacks: timestamp should be within 5 mins
+    current_ts = int(time.time())
+    zoom_ts = int(x_zm_request_timestamp)
+    if abs(current_ts - zoom_ts) > 300:
+        raise HTTPException(status_code=400, detail="Zoom request timestamp too old")
+
+    message = f"v0:{x_zm_request_timestamp}:{body_bytes.decode()}"
+    computed_hmac = hmac.new(
+        ZOOM_SECRET_TOKEN.encode(),
+        message.encode(),
+        hashlib.sha256
+    ).hexdigest()
+    computed_signature = f"v0={computed_hmac}"
+
+    if computed_signature != x_zm_signature:
+        raise HTTPException(status_code=401, detail="Invalid Zoom signature")
 
     # ------------------- STEP 1: URL Validation -------------------
     if data.get("event") == "endpoint.url_validation":
         plain_token = data["payload"]["plainToken"]
-
-        # HMAC-SHA256 with secret token
-        hmac_obj = hmac.new(
+        encrypted_token = hmac.new(
             ZOOM_SECRET_TOKEN.encode(),
             plain_token.encode(),
             hashlib.sha256
-        )
-        encrypted_token = base64.b64encode(hmac_obj.digest()).decode()
-
-        logging.info(f"URL Validation -> plainToken: {plain_token}, encryptedToken: {encrypted_token},ZOOM_SECRET_TOKEN:{ZOOM_SECRET_TOKEN}")
-
-        return {
-            "plainToken": plain_token,
-            "encryptedToken": encrypted_token
-        }
+        ).hexdigest()  # Use hex instead of base64
+        logging.info(f"URL Validation -> plainToken: {plain_token}, encryptedToken: {encrypted_token}")
+        return {"plainToken": plain_token, "encryptedToken": encrypted_token}
 
     # ------------------- STEP 2: Participant Joined -------------------
     if data.get("event") == "meeting.participant_joined":
