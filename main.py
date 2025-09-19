@@ -1,23 +1,28 @@
+# main.py
 import os
 import hmac
 import hashlib
 import logging
+import json
+import time
 from fastapi import FastAPI, Request, Header, HTTPException
 import httpx
-import time
 
 app = FastAPI()
 
 # ------------------- CONFIG -------------------
 BITRIX_FORM_URL = "https://finideas.bitrix24.in/bitrix/services/main/ajax.php?action=crm.site.form.fill"
-FORM_ID = "906"
+FORM_ID = 906                  # integer
 SEC_CODE = "tzk3qe"
-TIMEZONE_OFFSET = -330  # IST
+TIMEZONE_OFFSET = -330         # IST
 
 # Secret Token from Zoom App → Event Subscriptions → Secret Token
 ZOOM_SECRET_TOKEN = os.getenv("ZOOM_SECRET_TOKEN")
 
 logging.basicConfig(level=logging.INFO)
+
+if not ZOOM_SECRET_TOKEN:
+    logging.warning("ZOOM_SECRET_TOKEN is not set in environment. URL validation & signature checks will fail.")
 
 # ------------------- ROUTE -------------------
 @app.post("/zoom/webhook")
@@ -26,9 +31,15 @@ async def zoom_webhook(
     x_zm_signature: str = Header(None),
     x_zm_request_timestamp: str = Header(None)
 ):
+    # read raw body once
     body_bytes = await request.body()
-    data = await request.json()
-    logging.info(f"Zoom Payload: {data}")
+    try:
+        data = json.loads(body_bytes.decode())
+    except Exception:
+        logging.exception("Failed to parse JSON body")
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    logging.info("Zoom Payload:\n%s", json.dumps(data, indent=2))
 
     # ------------------- VERIFY SIGNATURE -------------------
     if not x_zm_signature or not x_zm_request_timestamp:
@@ -36,7 +47,11 @@ async def zoom_webhook(
 
     # Prevent replay attacks: timestamp should be within 5 mins
     current_ts = int(time.time())
-    zoom_ts = int(x_zm_request_timestamp)
+    try:
+        zoom_ts = int(x_zm_request_timestamp)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid Zoom timestamp header")
+
     if abs(current_ts - zoom_ts) > 300:
         raise HTTPException(status_code=400, detail="Zoom request timestamp too old")
 
@@ -49,6 +64,7 @@ async def zoom_webhook(
     computed_signature = f"v0={computed_hmac}"
 
     if computed_signature != x_zm_signature:
+        logging.warning("Signature mismatch. computed=%s header=%s", computed_signature, x_zm_signature)
         raise HTTPException(status_code=401, detail="Invalid Zoom signature")
 
     # ------------------- STEP 1: URL Validation -------------------
@@ -58,8 +74,8 @@ async def zoom_webhook(
             ZOOM_SECRET_TOKEN.encode(),
             plain_token.encode(),
             hashlib.sha256
-        ).hexdigest()  # Use hex instead of base64
-        logging.info(f"URL Validation -> plainToken: {plain_token}, encryptedToken: {encrypted_token}")
+        ).hexdigest()  # hex digest expected by Zoom
+        logging.info("URL Validation -> plainToken: %s encryptedToken: %s", plain_token, encrypted_token)
         return {"plainToken": plain_token, "encryptedToken": encrypted_token}
 
     # ------------------- STEP 2: Participant Joined -------------------
@@ -69,33 +85,51 @@ async def zoom_webhook(
         full_name = participant.get("user_name", "Unknown").split(" ", 1)
         first_name = full_name[0]
         last_name = full_name[1] if len(full_name) > 1 else ""
-        email = participant.get("email", "")
-        phone = participant.get("phone_number", "")
 
-        payload = {
-            "id": FORM_ID,
+        # Fallbacks if Zoom doesn't send these
+        email = participant.get("email") or f"{first_name.lower()}@noemail.zoom"
+        phone = participant.get("phone_number") or "+910000000000"
+
+        # Build form-data exactly like the curl you ran earlier
+        bitrix_payload = {
+            "id": str(FORM_ID),
             "sec": SEC_CODE,
             "lang": "en",
-            "timeZoneOffset": TIMEZONE_OFFSET,
-            "values": {
+            "timeZoneOffset": str(TIMEZONE_OFFSET),
+            "values": json.dumps({
                 "LEAD_NAME": [first_name],
                 "LEAD_LAST_NAME": [last_name],
                 "LEAD_PHONE": [phone],
                 "LEAD_EMAIL": [email]
-            },
-            "properties": {},
-            "consents": {},
-            "entities": [],
-            "trace": {
+            }),
+            "properties": "{}",
+            "consents": "{}",
+            "entities": "[]",
+            "trace": json.dumps({
                 "url": "https://b24-fcy7lp.bitrix24.site/crm_form_cekqw/",
                 "ref": "https://finideas.bitrix24.in/"
-            }
+            })
         }
 
-        async with httpx.AsyncClient() as client:
-            response = await client.post(BITRIX_FORM_URL, json=payload)
+        logging.info("Payload sent to Bitrix (form-url-encoded):\n%s", json.dumps(bitrix_payload, indent=2))
 
-        logging.info(f"Bitrix Response: {response.text}")
-        return {"status": "submitted", "bitrix_response": response.json()}
+        try:
+            async with httpx.AsyncClient(timeout=30.0) as client:
+                # send as form-data (application/x-www-form-urlencoded)
+                response = await client.post(BITRIX_FORM_URL, data=bitrix_payload)
+        except Exception as e:
+            logging.exception("Error while calling Bitrix")
+            raise HTTPException(status_code=502, detail="Failed to contact Bitrix")
+
+        logging.info("Bitrix HTTP status: %s", response.status_code)
+        logging.info("Bitrix Response body: %s", response.text)
+
+        # Try parse JSON or return raw text
+        try:
+            bitrix_resp = response.json()
+        except Exception:
+            bitrix_resp = response.text
+
+        return {"status": "submitted", "bitrix_response": bitrix_resp}
 
     return {"status": "ignored"}
