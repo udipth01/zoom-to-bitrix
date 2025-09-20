@@ -87,8 +87,8 @@ async def zoom_webhook(
         last_name = full_name[1] if len(full_name) > 1 else ""
 
         # Fallbacks if Zoom doesn't send these
-        email = participant.get("email") or f"{first_name.lower()}@noemail.zoom"
-        phone = participant.get("phone_number") or "+910000000000"
+        email = participant.get("email") 
+        phone = participant.get("phone_number") 
 
         # Build form-data exactly like the curl you ran earlier
         bitrix_payload = {
