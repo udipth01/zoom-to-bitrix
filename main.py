@@ -87,17 +87,6 @@ async def zoom_webhook(
         logging.warning("Signature mismatch. computed=%s header=%s", computed_signature, x_zm_signature)
         raise HTTPException(status_code=401, detail="Invalid Zoom signature")
 
-    # ------------------- STEP 1: URL Validation -------------------
-    if data.get("event") == "endpoint.url_validation":
-        plain_token = data["payload"]["plainToken"]
-        encrypted_token = hmac.new(
-            ZOOM_SECRET_TOKEN.encode(),
-            plain_token.encode(),
-            hashlib.sha256
-        ).hexdigest()  # hex digest expected by Zoom
-        logging.info("URL Validation -> plainToken: %s encryptedToken: %s", plain_token, encrypted_token)
-        return {"plainToken": plain_token, "encryptedToken": encrypted_token}
-
     # ------------------- STEP 2: Participant Joined -------------------
     if data.get("event") == "meeting.participant_joined":
         participant = data.get("payload", {}).get("object", {}).get("participant", {})

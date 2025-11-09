@@ -2,3 +2,7 @@ __pycache__/
 *.pyc
 .env
 how_to_login.txt
+fetch_meetings_with_polls.py
+fetch_try_final.py
+try_for_specific_meeting.py
+zoom_poll_responses.csv
