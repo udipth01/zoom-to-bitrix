@@ -42,8 +42,28 @@ async def zoom_webhook(
     logging.info("Zoom Payload:\n%s", json.dumps(data, indent=2))
 
     # ------------------- VERIFY SIGNATURE -------------------
+    # ------------------ URL VALIDATION BEFORE SIGNATURE ------------------
+    if data.get("event") == "endpoint.url_validation":
+        plain_token = data["payload"]["plainToken"]
+        encrypted_token = hmac.new(
+            ZOOM_SECRET_TOKEN.encode(),
+            plain_token.encode(),
+            hashlib.sha256
+        ).hexdigest()
+
+        logging.info("URL Validation -> plainToken: %s encryptedToken: %s",
+                    plain_token, encrypted_token)
+
+        # Zoom expects BOTH tokens EXACTLY like this
+        return {
+            "plainToken": plain_token,
+            "encryptedToken": encrypted_token
+        }
+
+    # ------------------- VERIFY SIGNATURE FOR OTHER EVENTS -------------------
     if not x_zm_signature or not x_zm_request_timestamp:
         raise HTTPException(status_code=400, detail="Missing Zoom headers")
+
 
     # Prevent replay attacks: timestamp should be within 5 mins
     current_ts = int(time.time())
