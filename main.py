@@ -10,39 +10,38 @@ import httpx
 
 app = FastAPI()
 
-# ------------------- CONFIG -------------------
-BITRIX_FORM_URL = "https://finideas.bitrix24.in/bitrix/services/main/ajax.php?action=crm.site.form.fill"
-FORM_ID = 906                  # integer
-SEC_CODE = "tzk3qe"
-TIMEZONE_OFFSET = -330         # IST
+# ---------------- CONFIG ----------------
+BITRIX_DOMAIN = "https://finideas.bitrix24.in"
+BITRIX_USER_TOKEN = os.getenv("BITRIX_USER_TOKEN")  # You must set your Bitrix webhook token
 
-# Secret Token from Zoom App → Event Subscriptions → Secret Token
+BITRIX_FORM_URL = f"{BITRIX_DOMAIN}/bitrix/services/main/ajax.php?action=crm.site.form.fill"
+BITRIX_LEAD_SEARCH_URL = f"{BITRIX_DOMAIN}/rest/24/{BITRIX_USER_TOKEN}/crm.lead.list"
+
+FORM_ID = 906
+SEC_CODE = "tzk3qe"
+TIMEZONE_OFFSET = -330  # IST
 ZOOM_SECRET_TOKEN = os.getenv("ZOOM_SECRET_TOKEN")
 
 logging.basicConfig(level=logging.INFO)
 
-if not ZOOM_SECRET_TOKEN:
-    logging.warning("ZOOM_SECRET_TOKEN is not set in environment. URL validation & signature checks will fail.")
 
-# ------------------- ROUTE -------------------
+# ---------------- MAIN ROUTE ----------------
 @app.post("/zoom/webhook")
 async def zoom_webhook(
     request: Request,
     x_zm_signature: str = Header(None),
     x_zm_request_timestamp: str = Header(None)
 ):
-    # read raw body once
-    body_bytes = await request.body()
+    raw_body = await request.body()
     try:
-        data = json.loads(body_bytes.decode())
+        data = json.loads(raw_body.decode())
     except Exception:
-        logging.exception("Failed to parse JSON body")
+        logging.exception("Invalid JSON")
         raise HTTPException(status_code=400, detail="Invalid JSON")
 
     logging.info("Zoom Payload:\n%s", json.dumps(data, indent=2))
 
-    # ------------------- VERIFY SIGNATURE -------------------
-    # ------------------ URL VALIDATION BEFORE SIGNATURE ------------------
+    # ---------------- URL VALIDATION ----------------
     if data.get("event") == "endpoint.url_validation":
         plain_token = data["payload"]["plainToken"]
         encrypted_token = hmac.new(
@@ -50,56 +49,66 @@ async def zoom_webhook(
             plain_token.encode(),
             hashlib.sha256
         ).hexdigest()
+        logging.info("URL Validation successful")
+        return {"plainToken": plain_token, "encryptedToken": encrypted_token}
 
-        logging.info("URL Validation -> plainToken: %s encryptedToken: %s",
-                    plain_token, encrypted_token)
-
-        # Zoom expects BOTH tokens EXACTLY like this
-        return {
-            "plainToken": plain_token,
-            "encryptedToken": encrypted_token
-        }
-
-    # ------------------- VERIFY SIGNATURE FOR OTHER EVENTS -------------------
+    # ---------------- VERIFY SIGNATURE ----------------
     if not x_zm_signature or not x_zm_request_timestamp:
         raise HTTPException(status_code=400, detail="Missing Zoom headers")
 
+    now = int(time.time())
+    zoom_ts = int(x_zm_request_timestamp)
+    if abs(now - zoom_ts) > 300:
+        raise HTTPException(status_code=400, detail="Zoom timestamp too old")
 
-    # Prevent replay attacks: timestamp should be within 5 mins
-    current_ts = int(time.time())
-    try:
-        zoom_ts = int(x_zm_request_timestamp)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid Zoom timestamp header")
-
-    if abs(current_ts - zoom_ts) > 300:
-        raise HTTPException(status_code=400, detail="Zoom request timestamp too old")
-
-    message = f"v0:{x_zm_request_timestamp}:{body_bytes.decode()}"
-    computed_hmac = hmac.new(
+    msg = f"v0:{x_zm_request_timestamp}:{raw_body.decode()}"
+    expected_sig = "v0=" + hmac.new(
         ZOOM_SECRET_TOKEN.encode(),
-        message.encode(),
+        msg.encode(),
         hashlib.sha256
     ).hexdigest()
-    computed_signature = f"v0={computed_hmac}"
 
-    if computed_signature != x_zm_signature:
-        logging.warning("Signature mismatch. computed=%s header=%s", computed_signature, x_zm_signature)
+    if expected_sig != x_zm_signature:
+        logging.warning("Signature mismatch")
         raise HTTPException(status_code=401, detail="Invalid Zoom signature")
 
-    # ------------------- STEP 2: Participant Joined -------------------
+    # ---------------- PARTICIPANT JOINED ----------------
     if data.get("event") == "meeting.participant_joined":
-        participant = data.get("payload", {}).get("object", {}).get("participant", {})
+        participant = data["payload"]["object"]["participant"]
+        name_parts = participant.get("user_name", "Unknown").split(" ", 1)
+        first_name = name_parts[0]
+        last_name = name_parts[1] if len(name_parts) > 1 else ""
+        email = participant.get("email")
+        phone = participant.get("phone_number")
 
-        full_name = participant.get("user_name", "Unknown").split(" ", 1)
-        first_name = full_name[0]
-        last_name = full_name[1] if len(full_name) > 1 else ""
+        if not email:
+            logging.warning("No email in Zoom event; cannot search existing lead.")
+            email = "unknown@zoom.com"
 
-        # Fallbacks if Zoom doesn't send these
-        email = participant.get("email") 
-        phone = participant.get("phone_number") 
+        # -------- STEP 1: SEARCH EXISTING LEAD --------
+        lead_id = None
+        lead_title = None
 
-        # Build form-data exactly like the curl you ran earlier
+        try:
+            async with httpx.AsyncClient(timeout=20.0) as client:
+                params = {
+                    "filter[email]": email,
+                    "select[]": ["ID", "TITLE", "SOURCE_ID", "SOURCE_DESCRIPTION"],
+                    "order[DATE_CREATE]": "ASC"
+                }
+                r = await client.get(BITRIX_LEAD_SEARCH_URL, params=params)
+                result = r.json().get("result", [])
+                if result:
+                    first_lead = result[0]
+                    lead_id = first_lead.get("ID")
+                    lead_title = first_lead.get("TITLE")
+                    logging.info(f"Found existing lead: ID={lead_id}, Title={lead_title}")
+                else:
+                    logging.info("No existing lead found for email %s", email)
+        except Exception as e:
+            logging.exception("Error fetching lead from Bitrix")
+
+        # -------- STEP 2: BUILD FORM PAYLOAD --------
         bitrix_payload = {
             "id": str(FORM_ID),
             "sec": SEC_CODE,
@@ -108,8 +117,10 @@ async def zoom_webhook(
             "values": json.dumps({
                 "LEAD_NAME": [first_name],
                 "LEAD_LAST_NAME": [last_name],
-                "LEAD_PHONE": [phone],
-                "LEAD_EMAIL": [email]
+                "LEAD_PHONE": [phone or "0000000000"],
+                "LEAD_EMAIL": [email],
+                "SOURCE_ID": [lead_id or ""],
+                "SOURCE3": [lead_title or ""]
             }),
             "properties": "{}",
             "consents": "{}",
@@ -120,25 +131,17 @@ async def zoom_webhook(
             })
         }
 
-        logging.info("Payload sent to Bitrix (form-url-encoded):\n%s", json.dumps(bitrix_payload, indent=2))
+        logging.info("Payload sent to Bitrix:\n%s", json.dumps(bitrix_payload, indent=2))
 
+        # -------- STEP 3: SUBMIT TO FORM --------
         try:
             async with httpx.AsyncClient(timeout=30.0) as client:
-                # send as form-data (application/x-www-form-urlencoded)
                 response = await client.post(BITRIX_FORM_URL, data=bitrix_payload)
-        except Exception as e:
-            logging.exception("Error while calling Bitrix")
-            raise HTTPException(status_code=502, detail="Failed to contact Bitrix")
-
-        logging.info("Bitrix HTTP status: %s", response.status_code)
-        logging.info("Bitrix Response body: %s", response.text)
-
-        # Try parse JSON or return raw text
-        try:
-            bitrix_resp = response.json()
+            logging.info("Bitrix Response [%s]: %s", response.status_code, response.text)
         except Exception:
-            bitrix_resp = response.text
+            logging.exception("Failed to send to Bitrix")
+            raise HTTPException(status_code=502, detail="Error calling Bitrix")
 
-        return {"status": "submitted", "bitrix_response": bitrix_resp}
+        return {"status": "submitted", "lead_id": lead_id, "lead_title": lead_title}
 
     return {"status": "ignored"}
