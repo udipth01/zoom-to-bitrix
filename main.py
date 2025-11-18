@@ -117,7 +117,7 @@ async def zoom_webhook(
             "values": json.dumps({
                 "LEAD_NAME": [first_name],
                 "LEAD_LAST_NAME": [last_name],
-                "LEAD_PHONE": [phone or "0000000000"],
+                "LEAD_PHONE": [phone],
                 "LEAD_EMAIL": [email],
                 "LEAD_UF_CRM_1638592220": [lead_id or ""],
                 "LEAD_UF_CRM_1731490501": [lead_title or ""]
