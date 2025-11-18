@@ -92,7 +92,7 @@ async def zoom_webhook(
         try:
             async with httpx.AsyncClient(timeout=20.0) as client:
                 params = {
-                    "filter[=EMAIL]": email,
+                    "filter[EMAIL]": email,
                     "select[]": ["ID", "TITLE", "SOURCE_ID", "SOURCE_DESCRIPTION"],
                     "order[DATE_CREATE]": "ASC"
                 }
