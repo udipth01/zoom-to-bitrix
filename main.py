@@ -81,9 +81,9 @@ async def zoom_webhook(
         email = participant.get("email")
         phone = participant.get("phone_number")
 
-        if not email:
-            logging.warning("No email in Zoom event; cannot search existing lead.")
-            email = "unknown@zoom.com"
+        # if not email:
+        #     logging.warning("No email in Zoom event; cannot search existing lead.")
+        #     email = "unknown@zoom.com"
 
         # -------- STEP 1: SEARCH EXISTING LEAD --------
         lead_id = None
@@ -92,7 +92,7 @@ async def zoom_webhook(
         try:
             async with httpx.AsyncClient(timeout=20.0) as client:
                 params = {
-                    "filter[email]": email,
+                    "filter[=EMAIL]": email,
                     "select[]": ["ID", "TITLE", "SOURCE_ID", "SOURCE_DESCRIPTION"],
                     "order[DATE_CREATE]": "ASC"
                 }
