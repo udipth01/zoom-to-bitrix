@@ -119,8 +119,8 @@ async def zoom_webhook(
                 "LEAD_LAST_NAME": [last_name],
                 "LEAD_PHONE": [phone or "0000000000"],
                 "LEAD_EMAIL": [email],
-                "SOURCE_ID": [lead_id or ""],
-                "SOURCE3": [lead_title or ""]
+                "LEAD_UF_CRM_1638592220": [lead_id or ""],
+                "LEAD_UF_CRM_1731490501": [lead_title or ""]
             }),
             "properties": "{}",
             "consents": "{}",
